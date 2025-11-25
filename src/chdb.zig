@@ -4,151 +4,154 @@ const c = @cImport({
     @cInclude("chdb.h");
 });
 
-// Small convenience types for C interop
-const c_void = @cImport({
-    @cInclude("stddef.h");
-});
-
 pub const ChdbError = error{
     NullHandle,
     OpenFailed,
     QueryFailed,
     InvalidArgument,
     StreamError,
+    OutOfMemory,
 };
 
 pub const Allocator = std.mem.Allocator;
 
-// A thin, safe wrapper around the chdb_connection opaque handle
 pub const Connection = struct {
-    conn: ?c.chdb_connection,
-    allocator: *Allocator,
+    allocator: Allocator,
+    handle: c.chdb_connection,
 
-    pub fn open(path: []const u8, allocator: *Allocator) !Connection {
-        if (path.len == 0) return ChdbError.InvalidArgument;
-
+    pub fn open(path: []const u8, allocator: Allocator) !Connection {
         // Build argv: program name + --path=<path>
-        var gpa = std.heap.GeneralPurposeAllocator(.{}) catch return ChdbError.OpenFailed;
+        const a = std.heap.c_allocator;
 
-        defer gpa.deinit(); // FIXME
-        const arena = &gpa.allocator;
-    }
+        // If using the default memory-backed DB, call with no argv to avoid
+        // platform-dependent pointer signedness/casting issues.
+        const is_memory = std.mem.eql(u8, path, ":memory:");
+        var conn_ptr: ?*c.chdb_connection = null;
+        if (is_memory) {
+            conn_ptr = c.chdb_connect(0, null);
+        } else {
+            const prog_slice = try std.fmt.allocPrint(a, "zigg", .{});
+            const path_slice = try std.fmt.allocPrint(a, "--path={s}", .{path});
 
-    pub fn close(self: *Connection) void {
-        if (self.conn) |h| {
-            // header: chdb_close_conn(chdb_connection * conn)
-            // We must pass the address of the handle; we stored only the handle, so create a temporary.
-            var tmp = h;
-            c.chdb_close_conn(@ptrCast(*c.chdb_connection, &tmp));
-            self.conn = null;
+            // allocate null-terminated copies for C argv as signed i8
+            var prog_z = try a.alloc(i8, prog_slice.len + 1);
+            var i: usize = 0;
+            while (i < prog_slice.len) : (i += 1) {
+                prog_z[i] = @bitCast(prog_slice[i]);
+            }
+            prog_z[prog_slice.len] = 0;
+
+            var path_z = try a.alloc(i8, path_slice.len + 1);
+            i = 0;
+            while (i < path_slice.len) : (i += 1) {
+                path_z[i] = @bitCast(path_slice[i]);
+            }
+            path_z[path_slice.len] = 0;
+
+            var argv: [2][*:0]const u8 = undefined;
+            argv[0] = @ptrCast(&prog_z);
+            argv[1] = @ptrCast(&path_z);
+            // argv[0] = @as(*const i8, &prog_z[0]);
+            // argv[1] = @as(*const i8, &path_z[0]);
+
+            const argc: std.os.c_int = 2;
+            conn_ptr = c.chdb_connect(argc, argv);
         }
+        if (conn_ptr == null) return ChdbError.OpenFailed;
+        const conn = conn_ptr.*;
+        return Connection{ .allocator = allocator, .handle = conn };
     }
 
     pub fn deinit(self: *Connection) void {
-        self.close();
+        if (self.handle != null) {
+            // chdb_close_conn expects chdb_connection * (pointer to pointer)
+            c.chdb_close_conn(&self.handle);
+            self.handle = null;
+        }
     }
 
-    /// Execute a simple query; returns owned byte slice using the connection's allocator.
     pub fn query(self: *Connection, sql: []const u8, format: ?[]const u8) ![]u8 {
-        if (self.conn == null) return ChdbError.NullHandle;
-        if (sql.len == 0) return ChdbError.InvalidArgument;
+        if (self.handle == null) return ChdbError.NullHandle;
 
+        const q_ptr = if (sql.len == 0) null else sql.ptr;
+        const f_ptr = if (format) |f| if (f.len == 0) null else f.ptr else null;
+        const q_len: usize = sql.len;
+        const f_len: usize = if (format) |f| f.len else 0;
 
-        // Build null-terminated C strings on C allocator
-        const c_alloc = std.heap.c_allocator;
-        const sql_buf = try c_alloc.alloc(u8, sql.len + 1);
-        std.mem.copy(u8, sql_buf[0..sql.len], sql);
-        sql_buf[sql.len] = 0;
+        const cres = if (q_len != 0 or f_len != 0) c.chdb_query_n(self.handle, q_ptr, q_len, f_ptr, f_len) else c.chdb_query(self.handle, q_ptr, f_ptr);
+        if (cres == null) return ChdbError.QueryFailed;
 
+        const buf = c.chdb_result_buffer(cres);
+        const len = usize(c.chdb_result_length(cres));
 
-        var format_buf: [?]u8 = null;
-        if (format) |f| {
-            const fb = try c_alloc.alloc(u8, f.len + 1);
-            std.mem.copy(u8, fb[0..f.len], f);
-            fb[f.len] = 0;
-            format_buf = fb;
+        if (buf == null or len == 0) {
+            // collect error if available
+            const err_c = c.chdb_result_error(cres);
+            c.chdb_destroy_query_result(cres);
+            if (err_c != null) {
+                return ChdbError.QueryFailed;
+            }
+            return try self.allocator.alloc(u8, 0);
         }
 
+        var out = try self.allocator.alloc(u8, len);
+        // copy byte-by-byte from C buffer to Zig-allocated buffer
+        var i: usize = 0;
+        while (i < len) : (i += 1) {
+            out[i] = @as(u8, buf[i]);
+        }
 
-        var res = c.chdb_query(self.conn.?, @ptrCast([*]const u8, sql_buf), if (format_buf) |fb| @ptrCast([*]const u8, fb) else null);
-
-        // free temporaries
-        c_alloc.free(sql_buf);
-        if (format_buf) |fb| c_alloc.free(fb);
-
-        if (res == null) return ChdbError.QueryFailed;
-
-        const buf = c.chdb_result_buffer(res);
-        const len = c.chdb_result_length(res);
-
-        // Copy into caller allocator
-        const out = try self.allocator.alloc(u8, len);
-        std.mem.copy(u8, out, @ptrCast([*]const u8, buf)[0..len]);
-
-        // Optional: expose metadata (elapsed, rows, bytes) via helper functions
-        // destroy C result
-        c.chdb_destroy_query_result(res);
-
-        return out[0..len];
+        c.chdb_destroy_query_result(cres);
+        return out;
     }
 
-    /// Streaming API: start -> fetch -> cancel -> destroy
-    pub fn stream_query(self: *Connection, sql: []const u8, format: ?[]const u8) !StreamingHandle {
-        if (self.conn == null) return ChdbError.NullHandle;
-        const c_alloc = std.heap.c_allocator;
-        const sql_buf = try c_alloc.alloc(u8, sql.len + 1);
-        std.mem.copy(u8, sql_buf[0..sql.len], sql);
-        sql_buf[sql.len] = 0;
+    pub fn stream_query(self: *Connection, sql: []const u8, format: ?[]const u8) !StreamingResult {
+        if (self.handle == null) return ChdbError.NullHandle;
 
+        const q_ptr = if (sql.len == 0) null else sql.ptr;
+        const f_ptr = if (format) |f| if (f.len == 0) null else f.ptr else null;
+        const q_len: usize = sql.len;
+        const f_len: usize = if (format) |f| f.len else 0;
 
-        var format_buf: [?]u8 = null;
-        if (format) |f| {
-            const fb = try c_alloc.alloc(u8, f.len + 1);
-            std.mem.copy(u8, fb[0..f.len], f);
-            fb[f.len] = 0;
-            format_buf = fb;
-        }
+        const cres = if (q_len != 0 or f_len != 0) c.chdb_stream_query_n(self.handle, q_ptr, q_len, f_ptr, f_len) else c.chdb_stream_query(self.handle, q_ptr, f_ptr);
+        if (cres == null) return ChdbError.StreamError;
 
-        var stream_res = c.chdb_stream_query(self.conn.?, @ptrCast([*]const u8, sql_buf), if (format_buf) |fb| @ptrCast([*]const u8, fb) else null);
-
-        c_alloc.free(sql_buf);
-        if (format_buf) |fb| c_alloc.free(fb);
-
-
-        if (stream_res == null) return ChdbError.StreamError;
-        return StreamingHandle{ .conn = self.conn.?, .result = stream_res, .allocator = self.allocator };
+        return StreamingResult{ .allocator = self.allocator, .conn = self, .result = cres };
     }
 };
 
-/// Handle for streaming queries
-pub const StreamingHandle = struct {
-    conn: c.chdb_connection,
+pub const StreamingResult = struct {
+    allocator: Allocator,
+    conn: *Connection,
     result: *c.chdb_result,
-    allocator: *Allocator,
 
-    pub fn fetch(self: *StreamingHandle) !?[]u8 {
-        if (self.result == null) return ChdbError.StreamError;
-        var next = c.chdb_stream_fetch_result(self.conn, self.result);
-        if (next == null) return null; // stream ended or error
+    pub fn fetch(self: *StreamingResult) !?[]u8 {
+        if (self.result == null) return null;
+        const cres = c.chdb_stream_fetch_result(self.conn.handle, self.result);
+        if (cres == null) return null;
 
+        const buf = c.chdb_result_buffer(cres);
+        const len = usize(c.chdb_result_length(cres));
+        if (buf == null or len == 0) {
+            c.chdb_destroy_query_result(cres);
+            return null;
+        }
 
-        const buf = c.chdb_result_buffer(next);
-        const len = c.chdb_result_length(next);
-        const out = try self.allocator.alloc(u8, len);
-        std.mem.copy(u8, out, @ptrCast([*]const u8, buf)[0..len]);
-        c.chdb_destroy_query_result(next);
-        return out[0..len];
+        var out = try self.allocator.alloc(u8, len);
+        var i: usize = 0;
+        while (i < len) : (i += 1) {
+            out[i] = @as(u8, buf[i]);
+        }
+
+        c.chdb_destroy_query_result(cres);
+        return out;
     }
 
-    pub fn cancel(self: *StreamingHandle) void {
+    pub fn deinit(self: *StreamingResult) void {
         if (self.result != null) {
-            c.chdb_stream_cancel_query(self.conn, self.result);
+            c.chdb_stream_cancel_query(self.conn.handle, self.result);
             c.chdb_destroy_query_result(self.result);
             self.result = null;
         }
-    }
-
-    pub fn deinit(self: *StreamingHandle) void {
-        self.cancel();
     }
 };
