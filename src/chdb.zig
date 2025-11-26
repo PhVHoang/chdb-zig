@@ -48,17 +48,15 @@ pub const Connection = struct {
             }
             path_z[path_slice.len] = 0;
 
-            var argv: [2][*:0]const u8 = undefined;
-            argv[0] = @ptrCast(&prog_z);
-            argv[1] = @ptrCast(&path_z);
-            // argv[0] = @as(*const i8, &prog_z[0]);
-            // argv[1] = @as(*const i8, &path_z[0]);
-
-            const argc: std.os.c_int = 2;
-            conn_ptr = c.chdb_connect(argc, argv);
+            var argv_arr: [2][*c]u8 = .{
+                @ptrCast(@constCast(&prog_z[0])),
+                @ptrCast(@constCast(&path_z[0])),
+            };
+            conn_ptr = c.chdb_connect(2, @ptrCast(&argv_arr[0]));
         }
         if (conn_ptr == null) return ChdbError.OpenFailed;
-        const conn = conn_ptr.*;
+        // Unwrap the optional and dereference to get the actual C pointer
+        const conn = conn_ptr.?.*;
         return Connection{ .allocator = allocator, .handle = conn };
     }
 
@@ -82,7 +80,7 @@ pub const Connection = struct {
         if (cres == null) return ChdbError.QueryFailed;
 
         const buf = c.chdb_result_buffer(cres);
-        const len = usize(c.chdb_result_length(cres));
+        const len: usize = @intCast(c.chdb_result_length(cres));
 
         if (buf == null or len == 0) {
             // collect error if available
@@ -123,15 +121,17 @@ pub const Connection = struct {
 pub const StreamingResult = struct {
     allocator: Allocator,
     conn: *Connection,
-    result: *c.chdb_result,
+    result: [*c]c.chdb_result,
 
     pub fn fetch(self: *StreamingResult) !?[]u8 {
-        if (self.result == null) return null;
+        // self.result is a C pointer, hence we need to compare it will a
+        // C null pointer
+        if (self.result == @as([*c]c.struct_chdb_result_, null)) return null;
         const cres = c.chdb_stream_fetch_result(self.conn.handle, self.result);
         if (cres == null) return null;
 
         const buf = c.chdb_result_buffer(cres);
-        const len = usize(c.chdb_result_length(cres));
+        const len: usize = @intCast(c.chdb_result_length(cres));
         if (buf == null or len == 0) {
             c.chdb_destroy_query_result(cres);
             return null;
@@ -148,10 +148,11 @@ pub const StreamingResult = struct {
     }
 
     pub fn deinit(self: *StreamingResult) void {
-        if (self.result != null) {
+        if (self.result != @as([*c]c.struct_chdb_result_, null)) {
             c.chdb_stream_cancel_query(self.conn.handle, self.result);
             c.chdb_destroy_query_result(self.result);
-            self.result = null;
+            // equivalent to self.result = null
+            self.result = @as([*c]c.struct_chdb_result_, null);
         }
     }
 };
