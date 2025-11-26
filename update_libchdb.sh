@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# borrowed from https://github.com/chdb-io/chdb-rust/blob/main/update_libchdb.sh
 set -e
 
 # Check for necessary tools
@@ -52,6 +53,8 @@ case "$(uname -s)" in
         exit 1
         ;;
 esac
+
+echo $PLATFORM
 
 # Main download URL
 DOWNLOAD_URL="https://github.com/chdb-io/chdb/releases/download/$LATEST_RELEASE/$PLATFORM"

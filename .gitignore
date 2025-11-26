@@ -3,3 +3,4 @@ zig-out/
 *.o
 *.tar.gz
 *.so
+.DS_Store

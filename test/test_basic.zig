@@ -1,13 +1,10 @@
 const std = @import("std");
 const chdb = @import("../src/chdb.zig");
 
-test "open and simple query" {
+test "simple query" {
     const allocator = std.heap.c_allocator;
-    var conn = try chdb.Connection.open(":memory:", allocator);
-    defer conn.deinit();
+    var result = try chdb.query("SELECT 1", allocator);
+    defer result.deinit();
 
-    const res = try conn.query("SELECT 1", null);
-    defer allocator.free(res);
-
-    try std.testing.expect(res.len > 0);
+    try std.testing.expect(result.len > 0);
 }

@@ -83,13 +83,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Ensure chdb C header is found
-    exe.addIncludePath(b.path("include"));
-
-    // Add the pre-built chdb static lib (.so file)
-    exe.addObjectFile(b.path("lib/libchdb.so"));
-
-    // Link libc
+    exe.addIncludePath(b.path("libchdb"));
+    exe.addObjectFile(b.path("libchdb/libchdb.so"));
     exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
