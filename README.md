@@ -6,13 +6,6 @@ A Zig language binding for [chDB](https://github.com/chdb-io/chdb), an embedded 
 
 `zigg` provides a simple and idiomatic Zig interface to chDB's C API. It enables you to execute SQL queries directly from Zig code without managing external database servers.
 
-## Features
-
-- **Simple Query API**: Execute SQL queries with a single function call
-- **Memory Safe**: Proper resource cleanup via `deinit()` methods
-- **Type-Safe**: Leverages Zig's type system for safer bindings
-- **Error Handling**: Comprehensive error types for query failures
-
 ## Installation
 
 ### Prerequisites
@@ -118,40 +111,6 @@ pub const QueryResult = struct {
 ├── test/
 │   └── test_basic.zig       # Basic tests
 └── README.md
-```
-
-## Architecture
-
-The binding uses chDB's stable query interface (`query_stable_v2`) to execute SQL:
-
-1. Accepts Zig strings and allocator
-2. Converts strings to C-compatible null-terminated format
-3. Calls the C API
-4. Returns results wrapped in a memory-safe `QueryResult` struct
-5. Cleanup via `deinit()` calls the underlying C free functions
-
-## Error Handling
-
-All errors are represented by the `ChdbError` enum:
-
-```zig
-pub const ChdbError = error{
-    QueryFailed,  // Query execution failed
-    OutOfMemory,  // Memory allocation failed
-};
-```
-
-**Example:**
-```zig
-var result = chdb.query("SELECT * FROM nonexistent", allocator) catch |err| {
-    std.debug.print("Query failed: {}\n", .{err});
-    return;
-};
-defer result.deinit();
-
-if (result.error_message) |err| {
-    std.debug.print("Query error: {s}\n", .{err});
-}
 ```
 
 ## Examples
