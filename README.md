@@ -113,34 +113,6 @@ pub const QueryResult = struct {
 └── README.md
 ```
 
-## Examples
-
-### Basic Query
-
-```zig
-var result = try chdb.query("SELECT 42 as answer", allocator);
-defer result.deinit();
-std.debug.print("{s}\n", .{result.buf[0..result.len]});
-```
-
-### Query with Elapsed Time
-
-```zig
-var result = try chdb.query("SELECT COUNT(*) FROM system.tables", allocator);
-defer result.deinit();
-std.debug.print("Query took {d}ms\n", .{result.elapsed * 1000});
-```
-
-### Handling Errors
-
-```zig
-var result = chdb.query("INVALID SQL", allocator) catch |err| {
-    std.debug.print("Error: {}\n", .{err});
-    return err;
-};
-defer result.deinit();
-```
-
 ## Development
 
 ### Building for Debug

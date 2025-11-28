@@ -57,3 +57,11 @@ pub fn query(sql: []const u8, allocator: std.mem.Allocator) !QueryResult {
         ._internal = c_result,
     };
 }
+
+test "simple query" {
+    const allocator = std.heap.c_allocator;
+    var result = try query("SELECT 1", allocator);
+    defer result.deinit();
+
+    try std.testing.expect(result.len > 0);
+}
