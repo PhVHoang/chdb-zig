@@ -62,10 +62,7 @@ pub fn query(sql: []const u8, allocator: std.mem.Allocator) !QueryResult {
     // Direct cast without intermediate pointer
     const argv: [*c][*c]u8 = &argv_buf;
 
-    const c_result = c.query_stable_v2(2, argv);
-    if (c_result == null) {
-        return ChdbError.QueryFailed;
-    }
+    const c_result = c.query_stable_v2(2, argv) orelse return ChdbError.QueryFailed;
 
     return QueryResult{
         .buf = c_result.*.buf,
