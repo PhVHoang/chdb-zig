@@ -28,23 +28,39 @@ pub const QueryResult = struct {
 
 /// Execute a SQL query using the stable query interface
 pub fn query(sql: []const u8, allocator: std.mem.Allocator) !QueryResult {
-    // Build argv: ["zigg", "SELECT ..."]
-    var argv_buf = try allocator.alloc([*c]u8, 2);
-    defer allocator.free(argv_buf);
+    // // Build argv: ["zigg", "SELECT ..."]
+    // var argv_buf = try allocator.alloc([*c]u8, 2);
+    // defer allocator.free(argv_buf);
 
-    // Program name (null-terminated)
-    const prog = try allocator.dupeZ(u8, "zigg");
-    defer allocator.free(prog);
+    // // Program name (null-terminated)
+    // const prog = try allocator.dupeZ(u8, "zigg");
+    // defer allocator.free(prog);
 
-    // SQL query (null-terminated)
+    // // SQL query (null-terminated)
+    // const sql_z = try allocator.dupeZ(u8, sql);
+    // defer allocator.free(sql_z);
+
+    // argv_buf[0] = @as([*c]u8, @ptrCast(prog.ptr));
+    // argv_buf[1] = @as([*c]u8, @ptrCast(sql_z.ptr));
+
+    // // Cast to C-compatible argv type
+    // const argv = @as([*c][*c]u8, @ptrCast(argv_buf.ptr));
+
+    // Use stack allocation for small fixed-size arrays
+    var argv_buf: [2][*c]u8 = undefined;
+
+    // Program name as comptime constant (no allocation needed)
+    const prog: [*c]const u8 = "zigg";
+
+    // Only allocate for SQL string (need null terminator)
     const sql_z = try allocator.dupeZ(u8, sql);
     defer allocator.free(sql_z);
 
-    argv_buf[0] = @as([*c]u8, @ptrCast(prog.ptr));
-    argv_buf[1] = @as([*c]u8, @ptrCast(sql_z.ptr));
+    argv_buf[0] = @constCast(prog);
+    argv_buf[1] = @ptrCast(sql_z.ptr);
 
-    // Cast to C-compatible argv type
-    const argv = @as([*c][*c]u8, @ptrCast(argv_buf.ptr));
+    // Direct cast without intermediate pointer
+    const argv: [*c][*c]u8 = &argv_buf;
 
     const c_result = c.query_stable_v2(2, argv);
     if (c_result == null) {
