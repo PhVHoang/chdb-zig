@@ -6,11 +6,11 @@ const c = @cImport({
 
 pub const ChdbError = error{
     QueryFailed,
-    OutOfMemory,
+    NullResult,
 };
 
 pub const QueryResult = struct {
-    buf: [*]u8,
+    buf: ?[*]u8,
     len: usize,
     elapsed: f64,
     rows_read: u64,
@@ -18,11 +18,14 @@ pub const QueryResult = struct {
     error_message: ?[*:0]u8,
     _internal: ?*c.struct_local_result_v2,
 
-    pub fn deinit(self: *QueryResult) void {
-        if (self._internal) |res| {
-            c.free_result_v2(res);
-            self._internal = null;
-        }
+    /// Free the underlying C result
+    pub fn deinit(self: QueryResult) void {
+        c.free_result_v2(self._internal);
+    }
+
+    /// Get the result as a string slice
+    pub fn data(self: QueryResult) []const u8 {
+        return self.buf;
     }
 };
 
@@ -45,23 +48,39 @@ pub fn query(sql: []const u8, allocator: std.mem.Allocator) !QueryResult {
     // Direct cast without intermediate pointer
     const argv: [*c][*c]u8 = &argv_buf;
 
-    const c_result = c.query_stable_v2(2, argv) orelse return ChdbError.QueryFailed;
+    const c_result = c.query_stable_v2(2, argv) orelse return ChdbError.NullResult;
+    errdefer c.free_result_v2(c_result);
+
+    // Handle error separately
+    if (c_result.error_message) |err_ptr| {
+        const err_msg = std.mem.span(@as([*:0]const u8, @ptrCast(err_ptr)));
+        std.log.err("ChDB query failed: {s}", .{err_msg});
+        return ChdbError.QueryFailed;
+    }
+
+    // Validate result buffer
+    const buf_ptr = c_result.buf orelse return ChdbError.QueryFailed;
+    const buf_slice = buf_ptr[0..c_result.len];
 
     return QueryResult{
-        .buf = c_result.*.buf,
-        .len = c_result.*.len,
-        .elapsed = c_result.*.elapsed,
-        .rows_read = c_result.*.rows_read,
-        .bytes_read = c_result.*.bytes_read,
-        .error_message = c_result.*.error_message,
+        .buf = buf_slice,
+        .elapsed = c_result.elapsed,
+        .rows_read = c_result.rows_read,
+        .bytes_read = c_result.bytes_read,
         ._internal = c_result,
     };
 }
 
 test "simple query" {
-    const allocator = std.heap.c_allocator;
-    var result = try query("SELECT 1", allocator);
+    const result = try query("SELECT 1", std.testing.allocator);
     defer result.deinit();
 
-    try std.testing.expect(result.len > 0);
+    try std.testing.expect(result.buf.len > 0);
+    try std.testing.expect(result.rows_read > 0);
+}
+
+test "query with error handling" {
+    // This should fail with invalid SQL
+    const result = query("INVALID SQL SYNTAX", std.testing.allocator);
+    try std.testing.expectError(ChdbError.QueryFailed, result);
 }
